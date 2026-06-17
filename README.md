@@ -100,6 +100,16 @@ npx -y @steipete/oracle --engine browser --model gpt-5.5-pro \
   --browser-follow-up "Challenge your previous recommendation" \
   --browser-follow-up "Give the final decision"
 
+# Browser consult with a large local dataset archive.
+# Keep Chrome/Oracle on the machine that can read ./data/public.zip; the small
+# text files are bundled while the large ZIP is uploaded directly.
+npx -y @steipete/oracle --engine browser --model gpt-5.5-pro \
+  --browser-manual-login \
+  --browser-attachments always \
+  --browser-bundle-files \
+  -p "Analyze this challenge. Use only the uploaded public dataset." \
+  --file challenge.md --file metadata.json --file data/public.zip
+
 # Gemini browser mode (no API key; uses Chrome cookies from gemini.google.com)
 npx -y @steipete/oracle --engine browser --model gemini-3.1-pro --prompt "a cute robot holding a banana" --generate-image out.jpg --aspect 1:1
 
@@ -332,6 +342,8 @@ Browser automation can open or control Chrome, so dry-runs and live runs print a
 | `--edit-image <file>`                                                          | Edit existing image with `--output` (Gemini browser mode). For ChatGPT browser mode, attach source images with `--file` and use `--generate-image` for the output path.                                                                                                                                                                   |
 | `--provider openai\|azure\|auto`, `--no-azure`, `--route`                      | Choose or inspect API provider routing; `openai` / `--no-azure` ignores Azure env/config for the run.                                                                                                                                                                                                                                     |
 | `--azure-endpoint`, `--azure-deployment`, `--azure-api-version`                | Target Azure OpenAI endpoints (picks Azure client automatically).                                                                                                                                                                                                                                                                         |
+
+For large browser uploads, raw archives/media that would exceed the in-memory ZIP bundle limit are passed through as direct ChatGPT attachments instead of being re-zipped.
 
 ## Configuration
 

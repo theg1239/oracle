@@ -132,6 +132,12 @@ interface WrittenBrowserBundle {
   tokenEstimateText: string;
 }
 
+interface BrowserBundlePlan {
+  attachments: BrowserAttachment[];
+  bundled: BrowserBundleMetadata | null;
+  tokenEstimateText: string | null;
+}
+
 interface BrowserBundleSource {
   absolutePath: string;
   displayPath: string;
@@ -245,6 +251,53 @@ async function writeBrowserBundle(
   };
 }
 
+function sumSourceBytes(sources: BrowserBundleSource[]): number {
+  return sources.reduce((total, source) => total + source.sizeBytes, 0);
+}
+
+async function writeBrowserBundlePlan({
+  sections,
+  textSources,
+  rawSources,
+  rawAttachments,
+  format,
+}: {
+  sections: FileSection[];
+  textSources: BrowserBundleSource[];
+  rawSources: BrowserBundleSource[];
+  rawAttachments: BrowserAttachment[];
+  format: ResolvedBrowserBundleFormat;
+}): Promise<BrowserBundlePlan> {
+  let bundleSources = format === "zip" ? [...textSources, ...rawSources] : textSources;
+  let passthroughAttachments = format === "zip" ? [] : rawAttachments;
+
+  if (
+    format === "zip" &&
+    rawSources.length > 0 &&
+    sumSourceBytes(bundleSources) > MAX_BROWSER_ZIP_BUNDLE_BYTES
+  ) {
+    // Large archives/media are already valid ChatGPT attachments. Avoid re-reading and
+    // re-zipping them in-memory; bundle only the text context and pass raw files through.
+    bundleSources = textSources;
+    passthroughAttachments = rawAttachments;
+  }
+
+  if (bundleSources.length === 0) {
+    return {
+      attachments: [...passthroughAttachments],
+      bundled: null,
+      tokenEstimateText: null,
+    };
+  }
+
+  const writtenBundle = await writeBrowserBundle(sections, bundleSources, format);
+  return {
+    attachments: [writtenBundle.attachment, ...passthroughAttachments],
+    bundled: writtenBundle.metadata,
+    tokenEstimateText: writtenBundle.tokenEstimateText,
+  };
+}
+
 export async function assembleBrowserPrompt(
   runOptions: RunOracleOptions,
   deps: AssemblePromptDeps = {},
@@ -342,7 +395,6 @@ export async function assembleBrowserPrompt(
     displayPath: attachment.displayPath,
     sizeBytes: attachment.sizeBytes ?? 0,
   }));
-  const allBundleSources = [...textBundleSources, ...rawUploadBundleSources];
   const attachments: BrowserAttachment[] = [...selectedPlan.attachments, ...rawUploadAttachments];
 
   const resolvedBundleFormat = resolveBrowserBundleFormat(bundleFormat, {
@@ -366,18 +418,17 @@ export async function assembleBrowserPrompt(
   let bundleText: string | null = null;
   let bundled: BrowserBundleMetadata | null = null;
   if (shouldBundle) {
-    const writtenBundle = await writeBrowserBundle(
+    const bundlePlan = await writeBrowserBundlePlan({
       sections,
-      resolvedBundleFormat === "zip" ? allBundleSources : textBundleSources,
-      resolvedBundleFormat,
-    );
-    bundleText = writtenBundle.tokenEstimateText;
+      textSources: textBundleSources,
+      rawSources: rawUploadBundleSources,
+      rawAttachments: rawUploadAttachments,
+      format: resolvedBundleFormat,
+    });
+    bundleText = bundlePlan.tokenEstimateText;
     attachments.length = 0;
-    attachments.push(writtenBundle.attachment);
-    if (resolvedBundleFormat === "text") {
-      attachments.push(...rawUploadAttachments);
-    }
-    bundled = writtenBundle.metadata;
+    attachments.push(...bundlePlan.attachments);
+    bundled = bundlePlan.bundled;
   }
   assertAttachmentCount(attachments, resolvedBundleFormat);
 
@@ -426,17 +477,16 @@ export async function assembleBrowserPrompt(
       textPlanShouldBundle: uploadPlan.shouldBundle,
     });
     if (fallbackShouldBundle) {
-      const writtenBundle = await writeBrowserBundle(
+      const bundlePlan = await writeBrowserBundlePlan({
         sections,
-        fallbackBundleFormat === "zip" ? allBundleSources : textBundleSources,
-        fallbackBundleFormat,
-      );
+        textSources: textBundleSources,
+        rawSources: rawUploadBundleSources,
+        rawAttachments: rawUploadAttachments,
+        format: fallbackBundleFormat,
+      });
       fallbackAttachments.length = 0;
-      fallbackAttachments.push(writtenBundle.attachment);
-      if (fallbackBundleFormat === "text") {
-        fallbackAttachments.push(...rawUploadAttachments);
-      }
-      fallbackBundled = writtenBundle.metadata;
+      fallbackAttachments.push(...bundlePlan.attachments);
+      fallbackBundled = bundlePlan.bundled;
     }
     assertAttachmentCount(fallbackAttachments, fallbackBundleFormat);
     fallback = {
@@ -454,7 +504,7 @@ export async function assembleBrowserPrompt(
     inlineFileCount,
     tokenEstimateIncludesInlineFiles,
     attachmentsPolicy,
-    attachmentMode: shouldBundle
+    attachmentMode: bundled
       ? "bundle"
       : attachments.length > 0
         ? "upload"

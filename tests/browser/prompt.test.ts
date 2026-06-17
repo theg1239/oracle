@@ -330,22 +330,63 @@ describe("assembleBrowserPrompt", () => {
     }
   });
 
-  test("rejects oversized in-memory ZIP bundles before reading source bytes", async () => {
+  test("passes oversized raw files through when ZIP bundling would exceed the memory limit", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-zip-memory-limit-"));
     try {
       const archivePath = path.join(tempDir, "archive.zip");
       await fs.writeFile(archivePath, "");
       await fs.truncate(archivePath, 128 * 1024 * 1024 + 1);
-      await expect(
-        assembleBrowserPrompt(
-          buildOptions({
-            file: ["archive.zip"],
-            browserAttachments: "always",
-            browserBundleFiles: true,
-          }),
-          { cwd: tempDir, tokenizeImpl: fastTokenizer },
-        ),
-      ).rejects.toThrow(/in-memory limit/i);
+      const result = await assembleBrowserPrompt(
+        buildOptions({
+          file: ["archive.zip"],
+          browserAttachments: "always",
+          browserBundleFiles: true,
+        }),
+        { cwd: tempDir, tokenizeImpl: fastTokenizer },
+      );
+
+      expect(result.attachmentMode).toBe("upload");
+      expect(result.bundled).toBeNull();
+      expect(result.attachments).toEqual([
+        expect.objectContaining({ path: archivePath, displayPath: "archive.zip" }),
+      ]);
+    } finally {
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test("bundles text context while leaving a large dataset archive as a raw upload", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "oracle-large-dataset-upload-"));
+    try {
+      const readmePath = path.join(tempDir, "challenge.md");
+      const archivePath = path.join(tempDir, "public.zip");
+      await fs.writeFile(readmePath, "# Challenge\nUse the public data only.\n", "utf8");
+      await fs.writeFile(archivePath, "");
+      await fs.truncate(archivePath, 128 * 1024 * 1024 + 1);
+
+      const result = await assembleBrowserPrompt(
+        buildOptions({
+          file: ["challenge.md", "public.zip"],
+          browserAttachments: "always",
+          browserBundleFiles: true,
+        }),
+        { cwd: tempDir, tokenizeImpl: fastTokenizer },
+      );
+
+      expect(result.attachmentMode).toBe("bundle");
+      expect(result.bundled).toEqual(expect.objectContaining({ originalCount: 1, format: "zip" }));
+      expect(result.attachments).toHaveLength(2);
+      expect(result.attachments[0]?.displayPath).toMatch(/attachments-bundle\.zip$/);
+      expect(result.attachments[1]).toEqual(
+        expect.objectContaining({ path: archivePath, displayPath: "public.zip" }),
+      );
+
+      const bundle = await fs.readFile(result.attachments[0]!.path);
+      const entries = readStoredZipEntries(bundle);
+      expect(Array.from(entries.keys())).toEqual(["challenge.md"]);
+      expect(entries.get("challenge.md")?.toString("utf8")).toBe(
+        "# Challenge\nUse the public data only.\n",
+      );
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
