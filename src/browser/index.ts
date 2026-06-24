@@ -2862,10 +2862,24 @@ async function runRemoteBrowserMode(
           throw new Error("Chrome DOM domain unavailable while uploading attachments.");
         }
         await clearComposerAttachments(Runtime, 5_000, logger);
-        // Use remote file transfer for remote Chrome (reads local files and injects via CDP)
+        const remoteHost = config.remoteChrome?.host?.toLowerCase?.() ?? "";
+        const remoteChromeHasLocalFiles =
+          remoteHost === "127.0.0.1" || remoteHost === "localhost" || remoteHost === "::1";
         for (const attachment of submissionAttachments) {
           logger(`Uploading attachment: ${attachment.displayPath}`);
-          await uploadAttachmentViaDataTransfer({ runtime: Runtime, dom: DOM }, attachment, logger);
+          if (remoteChromeHasLocalFiles) {
+            await uploadAttachmentFile(
+              { runtime: Runtime, dom: DOM, input: Input },
+              attachment,
+              logger,
+            );
+          } else {
+            await uploadAttachmentViaDataTransfer(
+              { runtime: Runtime, dom: DOM },
+              attachment,
+              logger,
+            );
+          }
           await delay(500);
         }
         // Scale timeout based on number of files: base 30s + 15s per additional file

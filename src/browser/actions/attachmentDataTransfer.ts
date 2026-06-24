@@ -1,18 +1,49 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ChromeClient, BrowserAttachment } from "../types.js";
 
-const MAX_DATA_TRANSFER_BYTES = 20 * 1024 * 1024;
+export const MAX_DATA_TRANSFER_BYTES = 20 * 1024 * 1024;
+
+function formatBytes(size: number): string {
+  if (size >= 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1).replace(/\.0$/, "")} MB`;
+  }
+  if (size >= 1024) {
+    return `${(size / 1024).toFixed(1).replace(/\.0$/, "")} KB`;
+  }
+  return `${size} B`;
+}
+
+async function resolveAttachmentSize(attachment: BrowserAttachment): Promise<number> {
+  if (Number.isFinite(attachment.sizeBytes) && (attachment.sizeBytes ?? 0) >= 0) {
+    return attachment.sizeBytes ?? 0;
+  }
+  const stats = await stat(attachment.path);
+  return stats.size;
+}
+
+export async function assertAttachmentCanUseDataTransfer(
+  attachment: BrowserAttachment,
+): Promise<number> {
+  const size = await resolveAttachmentSize(attachment);
+  if (size > MAX_DATA_TRANSFER_BYTES) {
+    throw new Error(
+      `Attachment ${path.basename(attachment.path)} is too large for browser-side data transfer (${formatBytes(size)}). Maximum size is ${formatBytes(MAX_DATA_TRANSFER_BYTES)}. Use a browser that can read the file path directly, such as --browser-manual-login on this machine, --browser-attach-running with local Chrome, or run oracle serve on the machine that has the file.`,
+    );
+  }
+  return size;
+}
 
 export async function transferAttachmentViaDataTransfer(
   runtime: ChromeClient["Runtime"],
   attachment: BrowserAttachment,
   selector: string,
 ): Promise<{ fileName: string; size: number }> {
+  await assertAttachmentCanUseDataTransfer(attachment);
   const fileContent = await readFile(attachment.path);
   if (fileContent.length > MAX_DATA_TRANSFER_BYTES) {
     throw new Error(
-      `Attachment ${path.basename(attachment.path)} is too large for data transfer (${fileContent.length} bytes). Maximum size is ${MAX_DATA_TRANSFER_BYTES} bytes.`,
+      `Attachment ${path.basename(attachment.path)} is too large for browser-side data transfer (${formatBytes(fileContent.length)}). Maximum size is ${formatBytes(MAX_DATA_TRANSFER_BYTES)}.`,
     );
   }
 
